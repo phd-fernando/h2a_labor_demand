@@ -81,7 +81,7 @@ var4 = c("addmcSectionName","addmcSectionNumber","addmcSectionDetails")
 df.text = data.frame()
 t0=Sys.time()
 path = paste0(mydir,"\\data\\jo\\");files = dir(path, pattern = "_jo.json");
-for(i in 1:length(files)){ #length(files):(length(files)-1)
+for(i in 1:10){ #length(files)
  
  
  h2a.json=fromJSON(paste0(file.path(path),files)[i],simplifyDataFrame=F)
