@@ -1,0 +1,574 @@
+###############################################################################
+###############################################################################
+###############################################################################
+###############################################################################
+###############################################################################
+###############################################################################
+###############################################################################
+###############################################################################
+
+# Code written by Fernando Brito, f.britogonzalez@ufl.edu
+# Dissertation work Spring 2025
+# Food and Resource Economics Department,
+# University of Florida.
+
+# clear all
+cat("\014"); rm(list=ls());
+
+# set seed to my phone number
+set.seed(2028349824)
+
+# smallest number in this version of R
+e =.Machine$double.xmin
+
+# maximum size of datasets in this script
+N=Inf
+
+# set directory
+mydir = "C:/Users/Fer/UF Dropbox/Fernando Jose Brito-Gonzalez/Fernando_Brito_Dissertation/h2a_labor/h2a_labor_demand"
+
+setwd(mydir)
+
+# load functions and packages for this script
+source(paste0(mydir,"/scripts/myfuns_h2ajson.R"))
+
+# set directory
+ddir <- paste0(mydir, "/raw/data/disclosure/")
+
+# keep df.jobs pointing to the legacy version for downstream compatibility
+df.jobs <- read.csv(paste0(ddir, "h2a_combined.csv"), stringsAsFactors = FALSE)
+
+# ------------------------------------------------------------------------------
+# Data prep: parse dates, compute duration, fte, fte_crop
+# ------------------------------------------------------------------------------
+df.jobs <- df.jobs %>%
+  mutate(
+    startDate  = as.Date(sub("T.*$", "", requsted_start_date)),
+    endDate    = as.Date(sub("T.*$", "", requsted_end_date)),
+    length     = as.numeric(endDate - startDate),
+    length     = ifelse(length > 0 & length <= 548, length, NA_real_), # drop impossible durations (>18 months or negative)
+    # FY2008-2010: hours column absent in DOL disclosure → fall back to 40
+    hoursWeek  = ifelse(is.na(as.numeric(basic_number_of_hours)), 40,
+                        as.numeric(basic_number_of_hours)),
+    hoursWeek  = ifelse(hoursWeek > 0 & hoursWeek <= 80, hoursWeek, NA_real_), # drop impossible hours
+    workers    = as.numeric(nbr_workers_certified),
+    # FY2008-2010, FY2013-2014: requested workers absent → fall back to certified
+    workers_req= coalesce(as.numeric(nbr_workers_requested),
+                          as.numeric(nbr_workers_certified)),
+    fte        = (length / 7 * hoursWeek) / (52 * 40) * workers_req,
+    fte_crop   = ifelse(
+      substr(naic_code, 1, 3) == "111" | substr(naic_code, 1, 4) == "1151",
+      fte, 0
+    )
+  )
+
+
+# ------------------------------------------------------------------------------
+# Figure 1. Monthly trends: visa requests, FTE, FTE crop  (Economist style)
+# ------------------------------------------------------------------------------
+econ_bg   <- "#D5E4EB"                          # Economist chart background
+econ_cols <- c("#006BA2", "#C0392B", "#3EBCD2") # blue, red, teal
+
+# pre-compute so we can extract the scale factor before plotting
+plot_data <- df.jobs %>%
+  filter(!is.na(startDate),
+         startDate >= as.Date("2005-01-01"),
+         startDate <= as.Date("2024-12-31")) %>%
+  group_by(ym = as.Date(format(startDate, "%Y-%m-01"))) %>%
+  dplyr::summarise(
+    fte_crop       = sum(fte_crop,                             na.rm = TRUE),
+    fte_total      = sum(fte,                                  na.rm = TRUE),
+    workers_crop   = sum(ifelse(substr(naic_code,1,3)=="111"|substr(naic_code,1,4)=="1151",
+                                workers_req, 0),               na.rm = TRUE),
+    workers_total  = sum(workers_req,                          na.rm = TRUE),
+    n_with_naics   = sum(!is.na(naic_code) & naic_code != "",  na.rm = TRUE)
+  ) %>%
+  mutate(
+    # crop FTE share of total FTE (from 2018 onward)
+    share_fte      = ifelse(n_with_naics > 0 & fte_total > 0 & ym >= as.Date("2018-01-01"),
+                            fte_crop / fte_total * 100, NA_real_),
+    # FTE as % of raw certified workers (fte intensity ratio, full history)
+    fte_ratio      = ifelse(workers_total > 0,
+                            fte_total / workers_total * 100, NA_real_),
+    # 12-month trailing moving averages
+    fte_ma12          = zoo::rollmean(fte_total,     k = 12, fill = NA, align = "right"),
+    fte_crop_ma12     = zoo::rollmean(fte_crop,      k = 12, fill = NA, align = "right"),
+    workers_ma12      = zoo::rollmean(workers_total, k = 12, fill = NA, align = "right"),
+    share_fte_ma12    = zoo::rollmeanr(share_fte,    k = 12, fill = NA),
+    fte_ratio_ma12    = zoo::rollmeanr(fte_ratio,    k = 12, fill = NA),
+    # suppress crop MA before 2018 (workers_ma12 starts as early as data allows)
+    fte_crop_ma12  = ifelse(ym >= as.Date("2018-01-01"), fte_crop_ma12, NA_real_)
+  )
+
+# label points: one per year (December)
+label_blue <- plot_data %>% filter(!is.na(fte_ratio_ma12),  format(ym, "%m") == "12")
+label_red  <- plot_data %>% filter(!is.na(share_fte_ma12),  format(ym, "%m") == "12")
+
+ggplot(plot_data, aes(x = ym)) +
+  # raw monthly points (faint, behind MA lines)
+  geom_point(aes(y = fte_total),     size = 0.6, color = econ_cols[1], alpha = 0.12, na.rm = TRUE) +
+  geom_point(data = plot_data %>% filter(ym >= as.Date("2018-01-01")),
+             aes(y = fte_crop),      size = 0.6, color = econ_cols[2], alpha = 0.12, na.rm = TRUE) +
+  geom_point(aes(y = workers_total), size = 0.6, color = "black",       alpha = 0.12, na.rm = TRUE) +
+  # 12-month MA lines
+  geom_line(aes(y = fte_ma12),      linewidth = 0.8, color = econ_cols[1], na.rm = TRUE) +
+  geom_line(aes(y = fte_crop_ma12), linewidth = 0.8, color = econ_cols[2], na.rm = TRUE) +
+  geom_line(aes(y = workers_ma12),  linewidth = 0.8, color = "black",       na.rm = TRUE) +
+  # blue line: H-2A FTE as % of certified workers (FTE intensity)
+  geom_text(
+    data  = label_blue,
+    aes(x = ym, y = fte_ma12, label = paste0(round(fte_ratio_ma12), "%")),
+    color = econ_cols[1], size = 2.8, vjust = -0.7, family = font, na.rm = TRUE
+  ) +
+  # red line: crop FTE as % of total H-2A FTE
+  geom_text(
+    data  = label_red,
+    aes(x = ym, y = fte_crop_ma12, label = paste0(round(share_fte_ma12), "%")),
+    color = econ_cols[2], size = 2.8, vjust = -0.7, family = font, na.rm = TRUE
+  ) +
+
+  coord_cartesian(ylim = c(0, 35000)) +
+  scale_y_continuous(
+    labels = label_number(scale = 1/1000, suffix = "K"),
+    expand = expansion(mult = c(0, 0.02))
+  ) +
+  scale_x_date(
+    date_breaks = "1 year",
+    date_labels = "%Y",
+    expand      = expansion(mult = c(0.01, 0.01))
+  ) +
+
+  labs(
+    title    = "Growth of the H-2A Program",
+    subtitle = "Total FTE (blue, label = FTE/workers %), crop FTE (red, label = crop FTE/total FTE %), certified workers (black); 12-month moving average",
+    caption  = "Source: U.S. Department of Labor, H-2A Disclosure Data"
+  ) +
+
+  theme_minimal(base_family = font) +
+  theme(
+    # backgrounds
+    panel.background    = element_rect(fill = econ_bg,  color = NA),
+    plot.background     = element_rect(fill = econ_bg,  color = NA),
+    legend.background   = element_rect(fill = econ_bg,  color = NA),
+    legend.key          = element_rect(fill = econ_bg,  color = NA),
+
+    # gridlines: horizontal white lines only
+    panel.grid.major.y  = element_line(color = "white", linewidth = 0.5),
+    panel.grid.major.x  = element_blank(),
+    panel.grid.minor    = element_blank(),
+
+    # axes
+    axis.ticks          = element_blank(),
+    axis.title          = element_blank(),
+    axis.text.x         = element_text(size = 9, color = "#333333",   family = font),
+    axis.text.y         = element_text(size = 9, color = econ_cols[1], family = font),
+
+    # legend: horizontal, top-left
+    legend.position     = "top",
+    legend.justification = "left",
+    legend.direction    = "horizontal",
+    legend.text         = element_text(size = 9,  color = "#333333", family = font),
+
+    # title / subtitle / caption
+    plot.title          = element_text(size = 13, face = "bold",   hjust = 0,
+                                       color = "#1a1a1a", family = font,
+                                       margin = margin(b = 4)),
+    plot.title.position = "plot",
+    plot.subtitle       = element_text(size = 9,  color = "#555555", hjust = 0,
+                                       family = font, margin = margin(b = 10)),
+    plot.caption        = element_text(size = 8,  color = "#888888", hjust = 0,
+                                       family = font, margin = margin(t = 8)),
+    plot.caption.position = "plot",
+    plot.margin         = margin(t = 12, r = 15, b = 10, l = 10)
+  )
+
+ggsave(paste0(mydir, "\\processed\\images\\monthlycertifiedworkers.png"),
+       width = 2400, height = 1600, units = "px", dpi = 200)
+
+# ------------------------------------------------------------------------------
+# Figure 2. Histogram: contract length (weeks), weighted by number of workers
+# ------------------------------------------------------------------------------
+hist_length <- df.jobs %>%
+  filter(!is.na(length), !is.na(workers_req), workers_req > 0) %>%
+  mutate(length_weeks = length / 7)
+
+hist_theme <- theme_minimal(base_family = font) +
+  theme(
+    panel.background    = element_rect(fill = econ_bg, color = NA),
+    plot.background     = element_rect(fill = econ_bg, color = NA),
+    panel.grid.major.y  = element_line(color = "white", linewidth = 0.5),
+    panel.grid.major.x  = element_blank(),
+    panel.grid.minor    = element_blank(),
+    axis.ticks          = element_blank(),
+    axis.text           = element_text(size = 13, color = "#333333", family = font),
+    axis.title          = element_text(size = 13, color = "#333333", family = font),
+    plot.title          = element_text(size = 16, face = "bold", hjust = 0,
+                                       color = "#1a1a1a", family = font),
+    plot.title.position = "plot",
+    plot.subtitle       = element_text(size = 12, color = "#555555", hjust = 0,
+                                       family = font, margin = margin(b = 10)),
+    plot.caption        = element_text(size = 10, color = "#888888", hjust = 0,
+                                       family = font),
+    plot.caption.position = "plot",
+    plot.margin         = margin(t = 12, r = 15, b = 10, l = 10)
+  )
+
+# helper: weighted quantiles + mean, returns named list
+wstats <- function(x, w) {
+  q <- Hmisc::wtd.quantile(x, weights = w, probs = c(0.25, 0.5, 0.75), na.rm = TRUE)
+  list(p25 = q[1], med = q[2], p75 = q[3], mn = weighted.mean(x, w, na.rm = TRUE))
+}
+
+# helper: add reference lines + staggered labels for one set of stats
+# weighted=TRUE uses dark colours; weighted=FALSE uses lighter grey-toned colours
+# vjust_base: weighted labels sit at top (1.2); unweighted pushed down (8+)
+add_reflines <- function(p, stats, weighted = TRUE, line_color = "#1a1a1a") {
+  if (weighted) {
+    col_val <- line_color
+    cols   <- c(p25 = col_val, med = col_val, mn = col_val, p75 = col_val)
+    ltys   <- c(p25 = "dashed", med = "solid", mn = "dotted", p75 = "dashed")
+    vjusts <- c(p25 = 1.2,      med = 1.2,     mn = 5.0,      p75 = 1.2)
+    lwd    <- 0.7
+  } else {
+    cols   <- c(p25 = "#AAAAAA", med = "#AAAAAA", mn = "#AAAAAA", p75 = "#AAAAAA")
+    ltys   <- c(p25 = "dashed",  med = "solid",   mn = "dotted",  p75 = "dashed")
+    vjusts <- c(p25 = 8.5,       med = 8.5,       mn = 12.0,      p75 = 8.5)
+    lwd    <- 0.5
+  }
+  labs <- c(p25 = paste0("P25\n",  round(stats$p25, 1)),
+            med = paste0("Med\n",  round(stats$med, 1)),
+            mn  = paste0("Mean\n", round(stats$mn,  1)),
+            p75 = paste0("P75\n",  round(stats$p75, 1)))
+  for (nm in names(cols)) {
+    p <- p +
+      geom_vline(xintercept = stats[[nm]], color = cols[nm],
+                 linetype = ltys[nm], linewidth = lwd) +
+      ggplot2::annotate("label", x = stats[[nm]], y = Inf,
+               label = labs[nm], vjust = vjusts[nm], hjust = -0.1,
+               size = 3.2, color = cols[nm], family = font,
+               fill = "white", label.size = 0, alpha = 0.85)
+  }
+  p
+}
+
+# unweighted stats helper (plain quantile + mean)
+ustats <- function(x) {
+  q <- quantile(x, probs = c(0.25, 0.5, 0.75), na.rm = TRUE)
+  list(p25 = q[1], med = q[2], p75 = q[3], mn = mean(x, na.rm = TRUE))
+}
+
+# --- contract length ---
+st_len   <- wstats(hist_length$length_weeks, hist_length$workers_req)
+st_len_u <- ustats(hist_length$length_weeks)
+
+p_len <- ggplot(hist_length, aes(x = length_weeks)) +
+  # unweighted: share of total job orders per bin
+  geom_histogram(aes(y = after_stat(count / sum(count))),
+                 binwidth = 2, fill = "#888888", alpha = 0.65,
+                 color = "white", linewidth = 0.2) +
+  # worker-weighted: share of total workers per bin
+  geom_histogram(aes(y = after_stat(count / sum(count)), weight = workers_req),
+                 binwidth = 2, fill = econ_cols[1], alpha = 0.75,
+                 color = "white", linewidth = 0.2) +
+  scale_x_continuous(breaks = seq(0, 78, by = 4),
+                     labels = function(x) paste0(x, "w")) +
+  scale_y_continuous(labels = scales::percent,
+                     expand = expansion(mult = c(0, 0.08))) +
+  labs(
+    title    = "Distribution of H-2A Contract Length",
+    subtitle = "Blue = worker-weighted; gray = unweighted (job orders); share of total; bin = 2 weeks",
+    x = "Contract length (weeks)", y = "Relative frequency",
+    caption  = paste0(
+      "Source: U.S. Department of Labor, H-2A Disclosure Data.\n",
+      "Note: The spike at 52 weeks reflects sheepherder contracts (NAICS 112410), which are explicitly ",
+      "authorized for year-round H-2A employment under DOL regulations (20 C.F.R. \u00a7655.100). ",
+      "These are concentrated in Idaho, Utah, Colorado, Wyoming, and Nevada."
+    )
+  ) +
+  hist_theme
+
+p_len <- add_reflines(p_len, st_len,   weighted = TRUE, line_color = econ_cols[1])
+p_len <- add_reflines(p_len, st_len_u, weighted = FALSE)
+ggsave(paste0(mydir, "\\processed\\images\\hist_contractlength.png"),
+       plot = p_len, width = 2000, height = 2000, units = "px", dpi = 200)
+
+# ------------------------------------------------------------------------------
+# Figure 3. Histogram: hours per week, weighted by number of workers
+# ------------------------------------------------------------------------------
+hist_hours <- df.jobs %>%
+  filter(!is.na(hoursWeek), !is.na(workers_req), workers_req > 0)
+
+st_hrs   <- wstats(hist_hours$hoursWeek, hist_hours$workers_req)
+st_hrs_u <- ustats(hist_hours$hoursWeek)
+
+p_hrs <- ggplot(hist_hours, aes(x = hoursWeek)) +
+  # unweighted: share of total job orders per bin
+  geom_histogram(aes(y = after_stat(count / sum(count))),
+                 binwidth = 1, fill = "#888888", alpha = 0.65,
+                 color = "white", linewidth = 0.2) +
+  # worker-weighted: share of total workers per bin
+  geom_histogram(aes(y = after_stat(count / sum(count)), weight = workers_req),
+                 binwidth = 1, fill = econ_cols[2], alpha = 0.75,
+                 color = "white", linewidth = 0.2) +
+  scale_x_continuous(breaks = seq(0, 80, by = 5)) +
+  scale_y_continuous(labels = scales::percent,
+                     expand = expansion(mult = c(0, 0.08))) +
+  labs(
+    title    = "Distribution of H-2A Hours per Week",
+    subtitle = "Red = worker-weighted; gray = unweighted (job orders); share of total; bin = 1 hour",
+    x = "Hours per week", y = "Relative frequency",
+    caption  = "Source: U.S. Department of Labor, H-2A Disclosure Data"
+  ) +
+  hist_theme
+
+p_hrs <- add_reflines(p_hrs, st_hrs,   weighted = TRUE, line_color = econ_cols[2])
+p_hrs <- add_reflines(p_hrs, st_hrs_u, weighted = FALSE)
+
+ggsave(paste0(mydir, "\\processed\\images\\hist_hoursperweek.png"),
+       plot = p_hrs, width = 2000, height = 2000, units = "px", dpi = 200)
+
+# ------------------------------------------------------------------------------
+# Figure 2b. Contract length — crop H-2A only (NAICS 111x or 1151x)
+# ------------------------------------------------------------------------------
+is_crop <- function(x) substr(x, 1, 3) == "111" | substr(x, 1, 4) == "1151"
+
+hist_length_crop <- df.jobs %>%
+  filter(!is.na(length), !is.na(workers_req), workers_req > 0,
+         !is.na(naic_code), is_crop(naic_code)) %>%
+  mutate(length_weeks = length / 7)
+
+st_len_c   <- wstats(hist_length_crop$length_weeks, hist_length_crop$workers_req)
+st_len_cu  <- ustats(hist_length_crop$length_weeks)
+
+p_len_c <- ggplot(hist_length_crop, aes(x = length_weeks)) +
+  geom_histogram(aes(y = after_stat(count / sum(count))),
+                 binwidth = 2, fill = "#888888", alpha = 0.65,
+                 color = "white", linewidth = 0.2) +
+  geom_histogram(aes(y = after_stat(count / sum(count)), weight = workers_req),
+                 binwidth = 2, fill = econ_cols[1], alpha = 0.75,
+                 color = "white", linewidth = 0.2) +
+  scale_x_continuous(breaks = seq(0, 78, by = 4),
+                     labels = function(x) paste0(x, "w")) +
+  scale_y_continuous(labels = scales::percent,
+                     expand = expansion(mult = c(0, 0.08))) +
+  labs(
+    title    = "Distribution of H-2A Contract Length — Crop Agriculture",
+    subtitle = "Blue = worker-weighted; gray = unweighted (job orders); share of total; bin = 2 weeks",
+    x = "Contract length (weeks)", y = "Relative frequency",
+    caption  = "Source: U.S. Department of Labor, H-2A Disclosure Data. Crop agriculture: NAICS 111x and 1151x."
+  ) +
+  hist_theme
+
+p_len_c <- add_reflines(p_len_c, st_len_c,  weighted = TRUE, line_color = econ_cols[1])
+p_len_c <- add_reflines(p_len_c, st_len_cu, weighted = FALSE)
+ggsave(paste0(mydir, "\\processed\\images\\hist_contractlength_crop.png"),
+       plot = p_len_c, width = 2000, height = 2000, units = "px", dpi = 200)
+
+# ------------------------------------------------------------------------------
+# Figure 3b. Hours per week — crop H-2A only
+# ------------------------------------------------------------------------------
+hist_hours_crop <- df.jobs %>%
+  filter(!is.na(hoursWeek), !is.na(workers_req), workers_req > 0,
+         !is.na(naic_code), is_crop(naic_code))
+
+st_hrs_c   <- wstats(hist_hours_crop$hoursWeek, hist_hours_crop$workers_req)
+st_hrs_cu  <- ustats(hist_hours_crop$hoursWeek)
+
+p_hrs_c <- ggplot(hist_hours_crop, aes(x = hoursWeek)) +
+  geom_histogram(aes(y = after_stat(count / sum(count))),
+                 binwidth = 1, fill = "#888888", alpha = 0.65,
+                 color = "white", linewidth = 0.2) +
+  geom_histogram(aes(y = after_stat(count / sum(count)), weight = workers_req),
+                 binwidth = 1, fill = econ_cols[2], alpha = 0.75,
+                 color = "white", linewidth = 0.2) +
+  scale_x_continuous(breaks = seq(0, 80, by = 5)) +
+  scale_y_continuous(labels = scales::percent,
+                     expand = expansion(mult = c(0, 0.08))) +
+  labs(
+    title    = "Distribution of H-2A Hours per Week — Crop Agriculture",
+    subtitle = "Red = worker-weighted; gray = unweighted (job orders); share of total; bin = 1 hour",
+    x = "Hours per week", y = "Relative frequency",
+    caption  = "Source: U.S. Department of Labor, H-2A Disclosure Data. Crop agriculture: NAICS 111x and 1151x."
+  ) +
+  hist_theme
+
+p_hrs_c <- add_reflines(p_hrs_c, st_hrs_c,  weighted = TRUE, line_color = econ_cols[2])
+p_hrs_c <- add_reflines(p_hrs_c, st_hrs_cu, weighted = FALSE)
+
+ggsave(paste0(mydir, "\\processed\\images\\hist_hoursperweek_crop.png"),
+       plot = p_hrs_c, width = 2000, height = 2000, units = "px", dpi = 200)
+
+# ------------------------------------------------------------------------------
+# Figure 4a. Hours per year (total contract hours) — all H-2A
+# ------------------------------------------------------------------------------
+hist_hpy <- df.jobs %>%
+  filter(!is.na(hoursWeek), !is.na(length), !is.na(workers_req), workers_req > 0) %>%
+  mutate(fte_contract = hoursWeek * (length / 7) / (40 * 52))
+
+st_hpy   <- wstats(hist_hpy$fte_contract, hist_hpy$workers_req)
+st_hpy_u <- ustats(hist_hpy$fte_contract)
+
+p_hpy <- ggplot(hist_hpy, aes(x = fte_contract)) +
+  geom_histogram(aes(y = after_stat(count / sum(count))),
+                 binwidth = 0.02, fill = "#888888", alpha = 0.65,
+                 color = "white", linewidth = 0.2) +
+  geom_histogram(aes(y = after_stat(count / sum(count)), weight = workers_req),
+                 binwidth = 0.02, fill = "#2E8B57", alpha = 0.75,
+                 color = "white", linewidth = 0.2) +
+  scale_x_continuous(breaks = seq(0, 1, by = 0.1),
+                     labels = function(x) paste0(round(x, 1), "")) +
+  scale_y_continuous(labels = scales::percent,
+                     expand = expansion(mult = c(0, 0.08))) +
+  labs(
+    title    = "Distribution of H-2A FTE per Contract",
+    subtitle = "Green = worker-weighted; gray = unweighted (job orders); share of total; bin = 0.02 FTE",
+    x = "FTE per contract  [= (hrs/wk × weeks) / 2,080]", y = "Relative frequency",
+    caption  = "Source: U.S. Department of Labor, H-2A Disclosure Data"
+  ) +
+  hist_theme
+
+p_hpy <- add_reflines(p_hpy, st_hpy,   weighted = TRUE,  line_color = "#2E8B57")
+p_hpy <- add_reflines(p_hpy, st_hpy_u, weighted = FALSE)
+
+ggsave(paste0(mydir, "\\processed\\images\\hist_fte_contract.png"),
+       plot = p_hpy, width = 2000, height = 2000, units = "px", dpi = 200)
+
+# ------------------------------------------------------------------------------
+# Figure 4b. FTE per contract — crop H-2A only
+# ------------------------------------------------------------------------------
+hist_hpy_c <- df.jobs %>%
+  filter(!is.na(hoursWeek), !is.na(length), !is.na(workers_req), workers_req > 0,
+         !is.na(naic_code), is_crop(naic_code)) %>%
+  mutate(fte_contract = hoursWeek * (length / 7) / (40 * 52))
+
+st_hpy_c   <- wstats(hist_hpy_c$fte_contract, hist_hpy_c$workers_req)
+st_hpy_cu  <- ustats(hist_hpy_c$fte_contract)
+
+p_hpy_c <- ggplot(hist_hpy_c, aes(x = fte_contract)) +
+  geom_histogram(aes(y = after_stat(count / sum(count))),
+                 binwidth = 0.02, fill = "#888888", alpha = 0.65,
+                 color = "white", linewidth = 0.2) +
+  geom_histogram(aes(y = after_stat(count / sum(count)), weight = workers_req),
+                 binwidth = 0.02, fill = "#2E8B57", alpha = 0.75,
+                 color = "white", linewidth = 0.2) +
+  scale_x_continuous(breaks = seq(0, 1, by = 0.1),
+                     labels = function(x) paste0(round(x, 1), "")) +
+  scale_y_continuous(labels = scales::percent,
+                     expand = expansion(mult = c(0, 0.08))) +
+  labs(
+    title    = "Distribution of H-2A FTE per Contract — Crop Agriculture",
+    subtitle = "Green = worker-weighted; gray = unweighted (job orders); share of total; bin = 0.02 FTE",
+    x = "FTE per contract  [= (hrs/wk × weeks) / 2,080]", y = "Relative frequency",
+    caption  = "Source: U.S. Department of Labor, H-2A Disclosure Data. Crop agriculture: NAICS 111x and 1151x."
+  ) +
+  hist_theme
+
+p_hpy_c <- add_reflines(p_hpy_c, st_hpy_c,  weighted = TRUE,  line_color = "#2E8B57")
+p_hpy_c <- add_reflines(p_hpy_c, st_hpy_cu, weighted = FALSE)
+
+ggsave(paste0(mydir, "\\processed\\images\\hist_fte_contract_crop.png"),
+       plot = p_hpy_c, width = 2000, height = 2000, units = "px", dpi = 200)
+
+STOP
+# ------------------------------------------------------------------------------
+# Figure 2. Active spells over time
+# ------------------------------------------------------------------------------
+df_active <- df.jobs %>%
+  filter(!is.na(startDate), !is.na(endDate)) %>%
+  select(startDate, endDate, naic_code)
+
+timeline <- seq(min(df_active$startDate), max(df_active$endDate), by = "day")
+
+counts <- data.frame(date = timeline) %>%
+  rowwise() %>%
+  mutate(
+    active1 = sum(df_active$startDate <= date & df_active$endDate >= date),
+    active2 = sum(df_active$startDate <= date & df_active$endDate >= date &
+                    substr(df_active$naic_code, 1, 3) == "111"),
+    active3 = sum(df_active$startDate <= date & df_active$endDate >= date &
+                    substr(df_active$naic_code, 1, 3) == "112")
+  ) %>%
+  ungroup()
+
+ggplot(counts) +
+  geom_line(aes(date, active1), linewidth = 1) +
+  geom_line(aes(date, active2), linewidth = 1) +
+  labs(
+    x     = NULL,
+    y     = "Active spells",
+    title = "Active spells over time"
+  ) +
+  theme_minimal()
+
+
+STOP
+
+
+# ##############################################################################
+
+# unit of observation is county x year
+zip2fips <- read_delim(
+  paste0(mydir, "\\raw\\data\\ZIP-COUNTY-FIPS_2017-06.csv"),
+  col_select = c(jobPostcode = 1, fips = 4)
+)
+
+df.h2a <- df.jobs %>%
+  mutate(jobPostcode = coalesce(worksite_postal_code, employer_postal_code)) %>%
+  merge(zip2fips, by = "jobPostcode") %>%
+  group_by(fips, year = format(startDate, "%Y")) %>%
+  dplyr::summarise(
+    n          = n(),
+    workers_req = sum(workers_req, na.rm = TRUE),
+    fte        = sum(fte,          na.rm = TRUE),
+    fte_crop   = sum(fte_crop,     na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+
+dates <- seq(
+  from = as.Date("2008-01-01"),
+  to   = as.Date("2025-09-01"),
+  by   = "month"
+)
+
+
+# plot geographical distribution certified workers
+for (date in dates) {
+  p <- plot_usmap(
+    data    = df.h2a %>%
+                filter(as.Date(startDate) <= date & as.Date(endDate) >= date) %>%
+                mutate(fte = log(1 + fte)),
+    values  = "fte",
+    regions = "county",
+    exclude = c("AK", "HI"),
+    color   = "#EFF5F5"
+  ) +
+    scale_fill_continuous(
+      low      = "white",
+      high     = my_col[1],
+      na.value = "white",
+      name     = "Number of visas \nrequested (log+1)",
+      label    = scales::comma,
+      limits   = c(0, 10)
+    ) +
+    theme(plot.subtitle = element_text(size = 18, family = font)) +
+    theme(legend.position = "right") +
+    labs(title = paste("H-2A visa requests active in", format(as.Date(date), "%B %Y")))
+
+  ggsave(
+    paste0(mydir, "\\processed\\fig\\countycertifiedworkers_", date, ".png"),
+    plot  = p,
+    width = 2000, height = 2000, units = "px"
+  )
+}
+
+
+# to do list
+
+# PIVOT: panel by firms or counties, and years or quarters.
+# stablish number of workers, fte, farms, entering and leaving the panel.
+# change of farm practices requires dummy variables for:
+# -number of species, tasks required, and number of workers.
+# think of variable to proxy for farm labor shortage:
+# -workers in construction, wages in construction, ratio constrution/farm. etc.4
+# erite it down, find paper, polish question!

@@ -1,0 +1,458 @@
+---
+title: "H-2A Job Order Text Analysis"
+subtitle: "Task Descriptions, Emerging Terms, and Verb-Object Pairs"
+author: "Fernando Brito-González"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    number_sections: true
+    fig_caption: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo      = TRUE,
+  warning   = FALSE,
+  message   = FALSE,
+  fig.align = "center"
+)
+
+mydir  <- "C:/Users/Fer/UF Dropbox/Fernando Jose Brito-Gonzalez/Fernando_Brito_Dissertation/h2a_labor"
+out_dir <- paste0(mydir, "/h2a_labor_demand/processed")
+
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+```
+
+---
+
+# Overview
+
+This document describes the text analysis pipeline applied to H-2A temporary agricultural
+worker job order descriptions filed with the U.S. Department of Labor (DOL). The analysis
+covers job orders submitted between **2019 and 2025**, extracted from DOL's seasonal jobs
+data feed (<https://seasonaljobs.dol.gov/>).
+
+The pipeline has three stages:
+
+| Stage | Script | Purpose |
+|---|---|---|
+| 1 | `unzip_jo.R` | Parse JSON job orders → extract task text |
+| 2 | `text_analytics_jo.R` | N-gram frequency, TF-IDF, emerging/declining terms |
+| 3 | `extract_tasks_jo.R` | Verb-object pairs from task descriptions |
+
+---
+
+# Data
+
+## Source
+
+H-2A job order data are available as structured JSON files from DOL's seasonal jobs feed.
+Each file corresponds to a filing period and contains one record per job order (ETA-790A form).
+The relevant text field is **Section A.8a** (`addmcSectionDetails`), which employers use to
+describe the specific duties workers will perform.
+
+## Parsing
+
+```{r load-data, eval=FALSE}
+# unzip_jo.R — core parsing logic
+library(jsonlite)
+
+path   <- paste0(mydir, "/data/jo/")
+files  <- dir(path, pattern = "_jo.json")
+
+df.text <- data.frame()
+for (i in seq_along(files)) {
+  h2a.json <- fromJSON(paste0(path, files[i]), simplifyDataFrame = FALSE)
+  h2a.json <- lapply(h2a.json, json.tr)
+
+  df0 <- do.call(bind_rows, lapply(h2a.json, json.df, "termsAndConditions")) %>%
+    bind_rows(do.call(bind_rows, lapply(h2a.json, json.df, "jobFrontTextFields"))) %>%
+    filter(!duplicated(.), addmcSectionNumber == "A.8a") %>%
+    group_by(caseNumber) %>%
+    summarise(addmcSectionDetails = paste0(unique(addmcSectionDetails), collapse = "; "),
+              .groups = "drop")
+
+  df.text <- bind_rows(df.text, df0)
+}
+
+saveRDS(df.text, file = paste0(out_dir, "/df_text_jo.rds"))
+```
+
+## Corpus Summary
+
+```{r corpus-summary}
+df <- readRDS(paste0(out_dir, "/df_text_jo.rds")) %>%
+  filter(!is.na(addmcSectionDetails), addmcSectionDetails != "",
+         dateSubmitted >= as.Date("2019-01-01")) %>%
+  mutate(year    = lubridate::year(dateSubmitted),
+         quarter = lubridate::quarter(dateSubmitted),
+         period  = paste0(year, "-Q", quarter),
+         n_words = str_count(addmcSectionDetails, "\\S+"))
+
+tibble(
+  Statistic = c("Job orders", "Date range", "Mean words per order",
+                "Median words per order", "Total words"),
+  Value = c(
+    format(nrow(df), big.mark = ","),
+    paste(min(df$dateSubmitted), "to", max(df$dateSubmitted)),
+    round(mean(df$n_words)),
+    round(median(df$n_words)),
+    format(sum(df$n_words), big.mark = ",")
+  )
+) %>%
+  kbl(caption = "Corpus Summary Statistics") %>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"), full_width = FALSE)
+```
+
+```{r docs-by-year}
+df %>%
+  count(year) %>%
+  ggplot(aes(factor(year), n)) +
+  geom_col(fill = "#2c7bb6") +
+  geom_text(aes(label = format(n, big.mark = ",")), vjust = -0.4, size = 3.5) +
+  labs(title = "H-2A Job Orders by Year",
+       x = NULL, y = "Number of job orders") +
+  theme_minimal(base_size = 12)
+```
+
+---
+
+# Text Analytics
+
+## Boilerplate Removal
+
+Job order text in Section A.8a mixes two types of content:
+
+- **Task descriptions** — employer-specific duties (what the worker will do)
+- **Terms & Conditions (T&C)** — legal boilerplate copied verbatim across filings
+
+To isolate task-relevant language, any sentence appearing in more than **3% of job orders**
+is classified as boilerplate and removed before analysis.
+
+```{r boilerplate, eval=FALSE}
+BOILER_THRESH <- 0.03
+
+sent_df <- df %>%
+  select(caseNumber, addmcSectionDetails) %>%
+  mutate(sentences = tokenizers::tokenize_sentences(addmcSectionDetails)) %>%
+  unnest(sentences) %>%
+  mutate(sent_norm = str_squish(str_to_lower(str_remove_all(sentences, "[^a-z\\s]"))))
+
+boilerplate <- sent_df %>%
+  distinct(caseNumber, sent_norm) %>%
+  count(sent_norm) %>%
+  filter(n > BOILER_THRESH * nrow(df)) %>%
+  pull(sent_norm)
+# 171 boilerplate sentences identified
+```
+
+After removal, **171 boilerplate sentences** were identified and excluded, leaving
+98,929 documents with substantive task text.
+
+## Stopword Filtering
+
+Three layers of stopwords are applied during tokenization:
+
+1. **Standard English** stopwords (`tidytext::stop_words`)
+2. **Spanish** stopwords (`tidytext::get_stopwords(language = "es")`) — some filings
+   include Spanish-language T&C text (e.g., *empleador*, *trabajador*, *contrato*)
+3. **Domain-specific** terms that are ubiquitous but uninformative (e.g., *worker*,
+   *employer*, *equipment*, *maintenance*)
+
+## Top N-Grams
+
+```{r res-load}
+res <- readRDS(paste0(out_dir, "/text_analytics_jo.rds"))
+```
+
+### Unigrams
+
+```{r top-uni-tbl}
+res$top_uni %>%
+  slice_head(n = 20) %>%
+  kbl(caption = "Top 20 Unigrams") %>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                full_width = FALSE)
+```
+
+```{r plot-top-uni, fig.cap="Top 20 unigrams across all H-2A job orders."}
+knitr::include_graphics(paste0(out_dir, "/plot_top_unigrams.png"))
+```
+
+### Bigrams
+
+```{r top-bi-tbl}
+res$top_bi %>%
+  slice_head(n = 20) %>%
+  kbl(caption = "Top 20 Bigrams") %>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                full_width = FALSE)
+```
+
+```{r plot-top-bi, fig.cap="Top 20 bigrams across all H-2A job orders."}
+knitr::include_graphics(paste0(out_dir, "/plot_top_bigrams.png"))
+```
+
+### Trigrams
+
+```{r top-tri-tbl}
+res$top_tri %>%
+  slice_head(n = 20) %>%
+  kbl(caption = "Top 20 Trigrams") %>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                full_width = FALSE)
+```
+
+```{r plot-top-tri, fig.cap="Top 20 trigrams across all H-2A job orders."}
+knitr::include_graphics(paste0(out_dir, "/plot_top_trigrams.png"))
+```
+
+## Emerging and Declining Terms
+
+To detect language change over time, the corpus is split chronologically into two
+equal halves by document count:
+
+- **Early period**: first 50,317 job orders
+- **Late period**: last 50,316 job orders
+
+For each n-gram, we compute:
+
+$$\text{growth} = \frac{s_{\text{late}} - s_{\text{early}}}{s_{\text{early}} + \varepsilon}$$
+
+where $s$ is the share of job orders containing the term in each half and
+$\varepsilon = 10^{-9}$ prevents division by zero. Terms must appear in at least
+0.5% of documents in each half to be included.
+
+Points **above** the diagonal are emerging (more common recently); points **below**
+are declining.
+
+### Unigrams
+
+```{r plot-emerge-uni, fig.cap="Emerging vs declining unigrams. Green = emerging; red = declining. Bubble size = absolute lift in share."}
+knitr::include_graphics(paste0(out_dir, "/plot_emerging_unigrams.png"))
+```
+
+### Bigrams
+
+```{r plot-emerge-bi, fig.cap="Emerging vs declining bigrams (top 25 emerging, bottom 15 declining)."}
+knitr::include_graphics(paste0(out_dir, "/plot_emerging_bigrams.png"))
+```
+
+```{r top-emerging-bi}
+res$emerging_bi %>%
+  slice_head(n = 15) %>%
+  select(bigram, share_early, share_late, growth, abs_lift) %>%
+  mutate(across(where(is.numeric), ~round(., 4))) %>%
+  kbl(caption = "Top 15 Emerging Bigrams") %>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                full_width = FALSE)
+```
+
+```{r top-declining-bi}
+res$emerging_bi %>%
+  slice_tail(n = 15) %>%
+  select(bigram, share_early, share_late, growth, abs_lift) %>%
+  mutate(across(where(is.numeric), ~round(., 4))) %>%
+  arrange(growth) %>%
+  kbl(caption = "Top 15 Declining Bigrams") %>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                full_width = FALSE)
+```
+
+### Trigrams
+
+```{r plot-emerge-tri, fig.cap="Emerging vs declining trigrams (top 25 emerging, bottom 15 declining)."}
+knitr::include_graphics(paste0(out_dir, "/plot_emerging_trigrams.png"))
+```
+
+```{r top-emerging-tri}
+res$emerging_tri %>%
+  slice_head(n = 15) %>%
+  select(trigram, share_early, share_late, growth, abs_lift) %>%
+  mutate(across(where(is.numeric), ~round(., 4))) %>%
+  kbl(caption = "Top 15 Emerging Trigrams") %>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                full_width = FALSE)
+```
+
+## TF-IDF by Quarter
+
+TF-IDF (term frequency–inverse document frequency) identifies terms that are
+especially distinctive to a given quarter relative to all other quarters.
+Each quarter is treated as a single "document" aggregating all job orders filed
+in that period.
+
+```{r plot-tfidf, fig.cap="Highest TF-IDF unigrams by quarter. Terms are distinctive to that quarter relative to all others.", fig.height=14}
+knitr::include_graphics(paste0(out_dir, "/plot_tfidf_by_period.png"))
+```
+
+---
+
+# Task Verb Extraction
+
+## Motivation
+
+Standard n-gram analysis captures co-occurrence patterns but does not distinguish
+**task verbs** (what workers do) from contextual nouns or modifiers. To characterize
+labor demand in terms of concrete tasks, we extract **verb–object pairs** directly
+from the task description text.
+
+## Method: Regex-Based Extraction
+
+Rather than full dependency parsing (which requires loading an NLP model for each
+document), we use two complementary regex patterns that cover the dominant grammatical
+structures in job description text:
+
+**Gerund constructions** — the most common form in H-2A listings:
+
+> *"harvesting grain crops, operating farm equipment, maintaining irrigation systems"*
+
+```
+([a-z]+ing)\s+((?:[a-z]+-?[a-z]*\s+){0,1}[a-z]+-?[a-z]*)
+```
+
+**Infinitive constructions**:
+
+> *"to harvest corn, to operate a tractor, to maintain equipment"*
+
+```
+\bto\s+(<ag_verb>)\s+((?:[a-z]+-?[a-z]*\s+){0,1}[a-z]+-?[a-z]*)
+```
+
+## Agricultural Verb Filter
+
+Extracted verbs are matched against a curated list of **agricultural task verbs**
+(base forms). This filters out gerunds that happen to appear in legal boilerplate
+that survived sentence-level removal (e.g., *"including"*, *"following"*,
+*"understanding"*).
+
+```{r ag-verbs}
+ag_verbs <- c(
+  "harvest","plant","cultivate","till","plow","irrigate","fertilize",
+  "spray","apply","sow","seed","prune","thin","weed","mow","bale",
+  "rake","disc","transplant","pollinate","fumigate","mulch","bed",
+  "pick","pack","sort","grade","clip","trim","cut","bunch","wrap",
+  "load","unload","haul","transport","drive","operate","handle",
+  "feed","water","milk","shear","brand","vaccinate","castrate",
+  "tag","weigh","pen","herd","move","rotate","breed","gather",
+  "maintain","repair","clean","inspect","calibrate","adjust",
+  "install","remove","replace","check","service","lubricate",
+  "mix","prepare","store","stack","transfer","assemble",
+  "wash","cool","dry","box","crate","label","count","measure",
+  "record","monitor","observe","spread","dig"
+)
+
+tibble(`Agricultural task verbs (base form)` = sort(unique(ag_verbs))) %>%
+  kbl() %>%
+  kable_styling(bootstrap_options = c("striped","condensed"),
+                full_width = FALSE) %>%
+  column_spec(1, width = "15em")
+```
+
+## Results
+
+```{r load-tasks}
+tasks <- readRDS(paste0(out_dir, "/tasks_jo.rds"))
+```
+
+```{r task-summary}
+tibble(
+  Statistic = c("Verb-object pairs (total)", "Unique verbs", "Unique objects",
+                "Job orders with at least one pair"),
+  Value = c(
+    format(nrow(tasks$verb_obj), big.mark = ","),
+    format(n_distinct(tasks$verb_obj$verb_base), big.mark = ","),
+    format(n_distinct(tasks$verb_obj$obj_lemma), big.mark = ","),
+    format(n_distinct(tasks$verb_obj$caseNumber), big.mark = ",")
+  )
+) %>%
+  kbl(caption = "Verb-Object Extraction Summary") %>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                full_width = FALSE)
+```
+
+### Top Task Verbs
+
+```{r top-verbs-tbl}
+tasks$top_verbs %>%
+  slice_head(n = 20) %>%
+  kbl(caption = "Top 20 Task Verbs") %>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                full_width = FALSE)
+```
+
+### Top Verb-Object Pairs
+
+```{r top-vo-tbl}
+tasks$top_vo %>%
+  slice_head(n = 30) %>%
+  select(pair, n) %>%
+  kbl(caption = "Top 30 Verb-Object Pairs") %>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                full_width = FALSE)
+```
+
+```{r plot-vo, fig.cap="Top 30 verb-object pairs extracted from H-2A task descriptions."}
+knitr::include_graphics(paste0(out_dir, "/plot_verb_obj_top30.png"))
+```
+
+### Objects by Verb
+
+```{r plot-facet, fig.cap="Top 6 objects per top-10 task verb.", fig.height=12}
+knitr::include_graphics(paste0(out_dir, "/plot_verb_facet_objects.png"))
+```
+
+### Verb Share Over Time
+
+```{r plot-trends, fig.cap="Share of each task verb (among all verb tokens) by year, for the top 12 verbs."}
+knitr::include_graphics(paste0(out_dir, "/plot_verb_trends.png"))
+```
+
+```{r verb-year-tbl}
+tasks$verb_year %>%
+  filter(verb_base %in% tasks$top_verbs$verb_base[1:12]) %>%
+  select(year, verb_base, n, share) %>%
+  mutate(share = round(share * 100, 2)) %>%
+  rename(pct_share = share) %>%
+  arrange(verb_base, year) %>%
+  kbl(caption = "Verb share by year — top 12 task verbs (share = % of all verb tokens)") %>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                full_width = FALSE) %>%
+  scroll_box(height = "400px")
+```
+
+---
+
+# Summary
+
+The analysis reveals several patterns in H-2A labor demand over 2019–2025:
+
+1. **Task vocabulary is stable**: the dominant task verbs (harvest, operate, maintain,
+   plant, irrigate) reflect the permanent core of seasonal agricultural work.
+
+2. **Emerging terms signal new demands**: bigrams such as *"haul crops"*,
+   *"crew leaders"*, and *"agricultural products"* are rising in frequency,
+   suggesting increased emphasis on logistics and supervision roles.
+
+3. **TF-IDF by quarter** reveals seasonal and crop-specific language
+   (e.g., terms distinctive to winter vs. summer quarters differ markedly).
+
+4. **Verb-object pairs provide structured task profiles** per job order,
+   enabling downstream analysis such as O\*NET skill mapping,
+   occupational similarity scoring, or wage decomposition by task content.
+
+---
+
+# Computational Environment
+
+```{r session}
+sessionInfo()
+```

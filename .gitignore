@@ -2,3 +2,24 @@
 .Rhistory
 .RData
 .Ruserdata
+
+# Raw data — large files (PDFs, RDS, Excel, CSV, zip)
+raw/
+
+# Processed intermediate data (RDS files, batch outputs) — regenerable
+processed/text/
+processed/text/gap_batches/
+processed/text/gap_batches_full/
+
+# Keep processed images (figures for dissertation)
+!processed/images/
+
+# Logs
+logs/
+
+# Dashboard build artifacts
+dashboard/
+
+# Misc
+Rplots.pdf
+*.pdf
