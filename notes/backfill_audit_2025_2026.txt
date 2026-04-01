@@ -1,0 +1,92 @@
+===========================================================
+  H-2A BACKFILL AUDIT REPORT
+  Run date: 2026-03-31
+===========================================================
+
+SOURCE
+  Zip directory : C:/Data/DOL_SeasonalJobs/zip_backfill_15day
+  Files scanned : 28 (2025-2026 jo zips)
+  Total rows parsed          : 52968
+  Unique caseNumbers (deduped): 34492
+
+OVERLAP WITH EXISTING DATA
+  Existing df_jobs_patched rows  : 135492
+  Already present in existing    : 34254  (99.3%)
+  Net-new (added this run)       : 238  (0.7%)
+
+ANNUAL COUNTS BEFORE → AFTER
+ year n_before n_after n_added
+ 2019     4409    4409       0
+ 2020    15524   15524       0
+ 2021    18126   18126       0
+ 2022    20161   20161       0
+ 2023    22319   22319       0
+ 2024    24845   24845       0
+ 2025    25325   25325       0
+ 2026     4783    4783       0
+
+OCTOBER 2025 GAP
+  Before backfill : 111 JOs
+  After backfill  : 111 JOs
+  Net added       : 0
+
+COLUMN GAPS
+  Columns in existing NOT in new (set to NA):
+    jobWageHourly
+    source
+    worksiteAddr
+    housingAddr
+    housingZip 
+
+OUTPUT
+  Updated file: processed/text/df_jobs_patched.rds
+  Total rows  : 135730
+
+===========================================================
+  DATE CORRECTION REPORT
+  Run date: 2026-03-31
+===========================================================
+  dateSubmitted values corrected: 0
+  Source: backfill ZIPs earliest-snapshot date
+  Logic: for each caseNumber in backfill, take the earliest
+         snap's dateSubmitted; replace existing if non-NA.
+  Updated file: processed/text/df_jobs_patched.rds
+
+===========================================================
+  OCTOBER 2025 SHUTDOWN ARTIFACT REPORT
+  Run date: 2026-03-31
+===========================================================
+
+ROOT CAUSE
+  Federal government shutdown: Oct 1 – Nov 12, 2025 (43 days,
+  longest in US history). The DOL seasonaljobs.dol.gov system
+  was unavailable during this period. JOs queued by employers
+  were batch-processed when the system came back online, receiving
+  Nov 1 timestamps. This created a spike of 411 JOs on 2025-11-01.
+  Backfill ISO timestamps confirm: all 411 Nov-1 cases are
+  genuinely stamped Nov 1 (not correctable to October).
+
+EVIDENCE
+  - Zero filings recorded Oct 2–Oct 30, 2025 (29 days of silence)
+  - Oct 1: 49 JOs (last day); Oct 31: 62 JOs (brief reopening?)
+  - Nov 1–12 elevated: 411, 58, 397, 258, 170, 158, 104 JOs (draining backlog)
+
+CORRECTION APPLIED
+  - dateSubmitted corrected via backfill ISO timestamps: 238 changes
+  - shutdown_flag column added to df_jobs_patched: 1964 cases flagged
+  - Flag window: Oct 1 – Nov 12, 2025 (full 43-day shutdown period)
+  - dateSubmitted is NOT changed; Nov-1 is the genuine DOL batch-flush stamp
+  - Backfill confirms: 0 of the 411 Nov-1 cases can be rerouted to October
+
+RECOMMENDATION FOR ANALYSIS
+  - Monthly time-series: exclude or mark Oct–Nov 2025 (shutdown_flag==TRUE)
+    or pool Oct+Nov 2025 into a single Q4-2025 period.
+  - Annual totals: no correction needed; all remain 2025 JOs.
+  - Automation signal scripts 18-30: unaffected (annual aggregates only).
+  - Dissertation footnote suggested:
+    'October-November 2025 filing counts are affected by the Oct 1 –
+     Nov 12, 2025 federal government shutdown (43 days, longest in US
+     history). The DOL filing portal was unavailable during the shutdown.
+     Queued applications received November 1 timestamps upon restoration,
+     creating an artificial Nov-1 spike of 411 JOs and a complete absence
+     of October 2-30 filings. These cases are flagged in shutdown_flag.'

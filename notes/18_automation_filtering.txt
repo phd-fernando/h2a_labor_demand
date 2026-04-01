@@ -1,0 +1,200 @@
+================================================================================
+AUTOMATION DETECTION STRATEGY — Script 18: Strawberry H-2A Orders
+Fernando Brito, f.britogonzalez@ufl.edu
+Spring 2026
+================================================================================
+
+OVERVIEW
+--------
+H-2A job orders describe what HUMAN workers will do. Employers do not file
+separate technology-adoption disclosures. Automation therefore appears in
+duties text indirectly — through what tasks are described, how they are
+described, and what language surrounds them.
+
+Three detection steps address three different manifestation channels:
+
+  Step 1: Direct mention    — Did the employer explicitly name the technology?
+  Step 2: Task displacement — Did the task composition shift from hand to machine?
+  Step 3: Semantic neighbors — What task language co-occurs with automation terms?
+
+
+================================================================================
+STEP 1 — DIRECT MENTION VOCABULARY
+================================================================================
+
+Three tiers of explicitness, ordered by confidence that the term refers to
+automation of farm tasks (not office/admin technology):
+
+TIER A — Unambiguous automation (high confidence)
+  Terms: robot, robotic, autonomous
+  These terms have essentially no other meaning in an agricultural duties
+  context. A sentence containing "robotic harvesting platform" unambiguously
+  describes farm automation.
+  Expected frequency: very low (< 1% of JOs). Even one occurrence is
+  substantively meaningful.
+
+TIER B — Mechanized harvest (moderate-high confidence)
+  Terms: mechanical harvest, machine harvest, harvest assist(ant),
+         harvest platform, conveyor, self-propelled, automated
+  These describe mechanization of the harvest task specifically.
+  "Conveyor" is included because in strawberry context it almost always
+  refers to field-harvest conveyor systems (carts that workers load as they
+  pick). "Automated" is included but borderline — it sometimes refers to
+  irrigation automation.
+  Expected frequency: 1–5% of JOs.
+
+TIER C — Precision agriculture (lower confidence, often precursor to automation)
+  Terms: GPS, drone/UAV, sensor, precision agriculture/farming,
+         electronic records/digital records
+  These signal technology adoption that often precedes or accompanies
+  robotics adoption. GPS-guided tractors, sensor-based irrigation, and
+  drone scouting are intermediate steps toward full automation.
+  CAVEAT: "electronic records" in H-2A context often refers to payroll
+  or time-keeping requirements (T&C language), not field technology.
+  Interpret Tier C signals cautiously.
+  Expected frequency: 2–8% of JOs.
+
+EXCLUDED FROM VOCABULARY
+  "tractor"    — universal; does not distinguish mechanization level
+  "equipment"  — universal; present in virtually all JOs
+  "machinery"  — same as equipment
+  "electronic" alone — usually payroll/compliance ("electronic timekeeping")
+  "machine"    alone — too ambiguous ("machine harvested" vs "machine shop")
+
+SEARCH SCOPE
+  Applied to the FULL raw duties text (not ag-verb filtered sentences).
+  Rationale: automation mentions sometimes appear in context sentences that
+  lack ag verbs. Example: "The farm operates robotic harvesting platforms.
+  Workers will assist with loading and quality inspection." — the first sentence
+  would be dropped by the ag-verb filter (no verb in the whitelist), losing
+  the automation signal.
+
+
+================================================================================
+STEP 2 — TASK MODE CLASSIFICATION
+================================================================================
+
+FOUR TASK MODES
+  Applied to verb-anchored bigrams (after Layers 1-4 from script 17).
+
+  HAND-TASK
+    Definition: bigram where w1 or w2 matches: hand, manually, manual,
+                handpick, handharv
+    Captures: hand pick, hand harvest, hand thin, hand place, hand sort,
+              manually harvest, manual thin
+    Interpretation: tasks explicitly described as performed by unassisted
+                    human hands. These are the tasks most susceptible to
+                    robotic replacement in strawberry farming.
+
+  MACHINE-OP
+    Definition: bigram where w1 or w2 matches: operate, drive, attach,
+                calibrate, adjust, monitor, load (machine context), unload,
+                machine, mechanic, conveyor, platform, sensor, autonomous,
+                robotic, automated, self-propel
+    Captures: operate harvester, drive platform, load conveyor, calibrate
+              equipment, monitor sensor
+    Interpretation: tasks involving equipment operation or monitoring.
+                    Rising machine-op share = mechanization adoption signal.
+
+  QUALITY-CTRL
+    Definition: bigram where w1 or w2 matches: inspect, grade, sort,
+                discard, cull, reject, weigh, pack
+    Captures: inspect fruit, grade produce, sort harvested, discard culls
+    Interpretation: quality control tasks. As harvest mechanizes, quality
+                    control often becomes the primary remaining human task
+                    (checking machine output). Rising quality-ctrl share
+                    alongside rising machine-op share is a complementarity
+                    signal.
+
+  OTHER-AG
+    All remaining verb-anchored bigrams not matching the above.
+
+DISPLACEMENT METRIC
+  hand_machine_ratio = hand-task share / machine-op share
+  Computed annually after employer-year deduplication.
+  A monotonically declining ratio over 2019-2025 = consistent mechanization
+  signal. A ratio that drops then stabilizes = possible plateau in adoption.
+
+LIMITATION
+  Bigram classification uses lexical rules, not semantic understanding.
+  "Hand tools" would be classified as hand-task even though using a hand tool
+  does not mean the task is manual (a powered hand tool is still a tool).
+  The verb-anchor filter mitigates this but does not eliminate it.
+
+
+================================================================================
+STEP 3 — SEMANTIC NEIGHBORHOOD EXPANSION
+================================================================================
+
+LOGIC
+  If an employer writes: "Workers will assist the robotic harvesting platform
+  by removing culls, placing fruit in flats, and monitoring conveyor speed."
+  — the sentence contains one automation term ("robotic") and several task
+  verbs describing what the human worker does ALONGSIDE the robot.
+  These co-occurring task verbs are the "semantic neighbors" of automation.
+
+PROCEDURE
+  1. Identify all sentences (from direct-mention JOs) that contain both:
+       (a) an automation keyword (from Step 1 vocabulary), AND
+       (b) an agricultural action verb (from the Layer 1 whitelist)
+  2. Extract all verb-anchored bigrams from those sentences,
+     EXCLUDING bigrams that themselves contain automation keywords
+     (so we capture the task context, not just re-find the trigger term).
+  3. Compare bigram frequency in automation-sentence context vs
+     the full non-automation JO control group.
+  4. Rank by lift = share_auto / share_control.
+     High-lift bigrams = task language that co-occurs with automation
+     far more often than expected by chance.
+
+INTERPRETATION OF LIFT
+  lift >> 1 : bigram is a complement or adjacent task to automation
+              (e.g., "monitor conveyor", "inspect output", "load platform")
+  lift ≈ 1  : bigram appears equally in auto and non-auto contexts
+              (e.g., common ag tasks like "hand pick" that appear everywhere)
+  lift < 1  : bigram is LESS common when automation is mentioned
+              (e.g., tasks that automation replaces — declining in auto context)
+
+MINIMUM SUPPORT
+  n_auto >= 3: bigram must appear in at least 3 automation sentences.
+  This is a low bar given the small size of the automation-sentence corpus.
+  Raise to 5 or 10 if the corpus grows in future years.
+
+LIMITATION
+  The automation-sentence corpus is small (driven by Step 1 frequency).
+  Lift estimates are noisy at low counts. The Step 3 output should be read
+  as suggestive/hypothesis-generating, not confirmatory.
+  Confirmatory evidence should come from Step 1 (direct mentions) and
+  Step 2 (aggregate trend), which have better statistical power.
+
+
+================================================================================
+WHAT THE THREE STEPS TOGETHER SUPPORT
+================================================================================
+
+CLAIM SUPPORTED BY STEP 1 ALONE
+  "Explicit references to robotic/mechanized harvest appear in X% of
+   strawberry H-2A job orders, rising from Y% in 2020 to Z% in 2025."
+  (Factual, directly observed — strongest claim.)
+
+CLAIM SUPPORTED BY STEP 2 ALONE
+  "The share of task descriptions involving hand labor has declined from X%
+   to Y% while machine-operation task descriptions have risen from A% to B%,
+   consistent with increasing mechanization of strawberry harvest."
+  (Indirect — could reflect template changes rather than actual task shifts.
+   Stronger if corroborated by Step 1.)
+
+CLAIM SUPPORTED BY STEPS 1 + 3
+  "When employers explicitly mention harvesting technology, they also describe
+   workers performing [neighbor bigrams] — suggesting these tasks function as
+   complements to, rather than substitutes for, automated harvest systems."
+  (Narrative claim about the nature of human-robot task division.)
+
+COMBINED CLAIM (dissertation-appropriate)
+  "Together, the three indicators suggest [crop] H-2A labor demand is
+   shifting from pure hand-harvest toward equipment-assisted and
+   quality-control roles, consistent with early-stage automation adoption."
+
+
+================================================================================
+END OF DOCUMENT
+================================================================================

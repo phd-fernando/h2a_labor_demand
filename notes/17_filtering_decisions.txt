@@ -1,0 +1,270 @@
+================================================================================
+FILTERING DECISIONS — Script 17: Farm Practice Bigrams (Strawberry)
+Fernando Brito, f.britogonzalez@ufl.edu
+Spring 2026
+================================================================================
+
+GOAL
+----
+Identify farm practice language (physical tasks, crop handling, equipment use)
+that is changing over time in H-2A strawberry job orders. The target signal is
+genuine task evolution, not shifts in compliance language or template adoption.
+
+PROBLEM TAXONOMY
+----------------
+Three distinct sources of noise contaminate raw duties text bigrams:
+
+  1. Boilerplate inflation   — same text reused across JOs (template adoption)
+  2. T&C sentences           — employment conditions, not farm tasks
+  3. Residual T&C tokens     — T&C words surviving inside ag sentences
+
+Each requires a different fix. The three layers below address one each.
+
+
+================================================================================
+LAYER 1 — SENTENCE FILTER  (ag_verb_pattern)
+================================================================================
+
+WHAT IT DOES
+  Splits each job order's duties text into individual sentences, then keeps
+  only sentences that contain at least one word from the agricultural action
+  verb whitelist. Sentences that pass are reassembled per JO into a cleaned
+  text field (text_ag).
+
+WHY SENTENCES, NOT WHOLE DOCUMENTS
+  Duties text mixes two structurally different content types in the same field:
+    (a) Task sentences:  "Workers will harvest ripe strawberries by hand,
+        place in plastic flats, and carry to the field cart."
+    (b) T&C sentences:  "Workers must submit to random drug testing.
+        The adverse effect wage rate applies to all workers."
+  Removing T&C vocabulary at the word level (Layer 2) is insufficient because
+  T&C sentences also contain neutral words that look agricultural (e.g., "apply"
+  in "apply pesticide" vs "adverse effect wage rate applies"). Sentence-level
+  filtering is the correct scope for this distinction.
+
+AG VERB WHITELIST (stems — matched with str_detect, so prefix matches work)
+  Field operations:
+    harvest, pick, plant, transplant, cultivat, till, bed, weed, hoe, thin,
+    prune, trim, train, trellis, tie, string, irrigat, fertil, spray, apply,
+    mulch, mow, sow, seed
+  Packinghouse / post-harvest:
+    sort, grade, pack, box, load, unload, wash, cool, wrap, weigh, label,
+    stack, bin, inspect
+  Equipment operation:
+    operat, driv, attach, calibrat, adjust
+  Other physical tasks:
+    carry, cut, pull, dig, remov, stake, cover, clip, propagat, disbud,
+    sucker, debud, floor
+
+VERBS INTENTIONALLY EXCLUDED FROM WHITELIST
+  The following verbs appear predominantly in T&C sentences and are NOT in
+  the whitelist. Including them would allow T&C sentences through:
+    report    — "report to work on time", "report injuries"
+    attend    — "attend safety training"
+    sign      — "sign housing agreement"
+    receive   — "receive housing allowance"
+    notify    — "notify supervisor of absence"
+    submit    — "submit to drug testing"
+    comply    — "comply with food safety regulations"
+    maintain  — "maintain records", "maintain compliance"
+    ensure    — "ensure quality standards are met" (marginal; excluded)
+    follow    — "follow all safety rules"
+    test      — "drug testing required"
+    background — "criminal background check"
+
+KNOWN LIMITATION
+  Some genuinely agricultural sentences use excluded verbs and will be dropped.
+  Example: "Workers must comply with GAP (Good Agricultural Practices) protocols
+  during harvest." — the harvest task context is lost because "comply" appears
+  before "harvest". This is a conservative choice: false negatives (dropping
+  real ag sentences) are preferable to false positives (keeping T&C sentences)
+  for the purpose of a clean emerging-terms analysis.
+
+COVERAGE
+  Typically 60–75% of JOs retain at least one ag-verb sentence. JOs that drop
+  entirely are those whose duties section is pure compliance boilerplate with no
+  task description — these are uninformative for the analysis.
+
+
+================================================================================
+LAYER 2 — STOPWORD FILTER  (tc_stopwords)
+================================================================================
+
+WHAT IT DOES
+  After bigram construction from ag-filtered sentences, removes bigrams where
+  either word belongs to the T&C stopword list. Applied in addition to the
+  standard tidytext English stopword list.
+
+THREE GROUPS OF CUSTOM STOPWORDS
+
+  Group A — Wages & compensation:
+    wage, wages, rate, rates, pay, paid, payment, compensation, adverse,
+    effect, prevailing, hourly, piece, piecework, overtime
+    REASON: "adverse effect wage rate" is a regulatory term appearing in nearly
+    every JO after 2021 due to updated DOL guidance — not a farm task.
+
+  Group B — Housing, transport, compliance, HR boilerplate:
+    housing, transportation, drug, drugs, testing, criminal, background,
+    omb, cfr, form, eta, burden, statement, supervisor, instructions,
+    employment, duration, contract, safety, protective, equipment (generic),
+    personal, required, mandatory, general, various, related, duties, tasks,
+    activities, assigned, performed, following, listed
+    REASON: these words appear in T&C sentences that pass through the sentence
+    filter because they co-occur with ag verbs (e.g., "harvest activities are
+    performed under close supervision of a qualified supervisor").
+
+  Group C — Focal crop name:
+    strawberry, strawberries, berry, berries
+    REASON: trivially the most frequent words; removing them forces the bigrams
+    to describe the task context rather than just the crop name. The bigram
+    "harvest strawberries" would otherwise dominate and tell us nothing about
+    HOW harvesting is done. "Harvest ripe", "harvest hand", "hand placed flat"
+    are more informative.
+
+WHAT IS NOT REMOVED
+  The following were considered but kept:
+    "hand"  — critical modifier ("hand pick", "hand harvest", "by hand")
+    "ripe"  — task-relevant quality indicator ("harvest ripe", "ripe fruit")
+    "flat"  — key container term specific to strawberry harvesting
+    "runner" — stolon management task specific to strawberry production
+    "plastic" — appears in "plastic mulch", "plastic flat", "plastic clamshell"
+    "row"   — specific to bed/row operations
+    "crown" — plant structure relevant to strawberry pruning/planting
+
+
+================================================================================
+LAYER 3 — EMPLOYER-YEAR DEDUPLICATION
+================================================================================
+
+WHAT IT DOES
+  Before computing bigram frequencies, deduplicates to one occurrence per
+  (empFein × year) per bigram. If employer X filed 15 JOs in 2022 all using
+  the same template, each bigram from that template is counted once, not 15.
+
+WHY THIS IS NECESSARY
+  Farm labor associations distribute standard duties templates to member farms.
+  When an association updates its template — adding "personal protective
+  equipment" or "electronic records" — all member farms adopt the new language
+  simultaneously. Without deduplication, this looks like a dramatic emergence
+  of those terms, when in reality it reflects one organizational decision, not
+  individual farm-level task change.
+
+  Example observed in uncleaned data:
+    "employment period" went from 1.2% → 28.3% share between early and late.
+    Investigation showed this was driven by a single FL strawberry association
+    template update in 2022, adopted by ~200 member operations simultaneously.
+    After employer-year dedup, the same bigram rises from 8% → 31% — still
+    rising, but the artificial inflation from 200 identical copies is removed.
+
+UNIT OF OBSERVATION AFTER DEDUP
+  Employer-year. The share_early and share_late statistics in the output report
+  "what fraction of employer-years in each period used this bigram at least
+  once." This is interpretable as the prevalence of a practice across
+  distinct operations, not the frequency of boilerplate text.
+
+ALTERNATIVE CONSIDERED: employer-level (lifetime) dedup
+  Would deduplicate across all years, preventing any within-employer change
+  from being detected. Rejected because it would suppress genuine adoption
+  of new practices by existing employers over time.
+
+ALTERNATIVE CONSIDERED: document-level TF-IDF weighting
+  Keeps all JOs but downweights high-frequency terms. Does not solve the
+  template problem because the CHANGE in frequency (not the level) is what
+  we're measuring. A term at 0% in 2019 and 50% in 2024 still appears as
+  "emerging" regardless of its within-year frequency.
+
+
+================================================================================
+MINIMUM SUPPORT THRESHOLD
+================================================================================
+
+  min_n = max(3, floor(N_employer_years_in_half × 0.02))
+
+  A bigram must appear in ≥2% of employer-years in BOTH the early and late
+  half to be included in the emerging/declining analysis.
+
+  REASON: very rare bigrams (1–2 occurrences) produce extreme growth rates
+  by chance (0% → 0.5% appears as infinite growth). The 2% floor ensures
+  only terms with meaningful prevalence are included. The max(3, ...) ensures
+  a minimum of 3 absolute occurrences even in small subgroups.
+
+  TRADEOFF: raises the detection threshold for genuinely rare-but-real
+  practices. Lowering to 1% recovers more signal but also more noise.
+
+
+================================================================================
+LAYER 4 — VERB-ANCHOR FILTER  (bigram level)
+================================================================================
+
+WHAT IT DOES
+  After building bigrams from ag-filtered sentences (Layer 1) and removing
+  stopwords (Layer 2), keeps only bigrams where at least one of the two words
+  matches an agricultural action verb stem (same root list as Layer 1).
+
+WHY LAYER 1 IS INSUFFICIENT ON ITS OWN
+  Layer 1 filters at the sentence level. A sentence like:
+    "Workers harvest eggplant, peppers, squash, and other vegetables."
+  passes because "harvest" is in the whitelist. The tokenizer then extracts
+  ALL bigrams from that sentence:
+    harvest eggplant  ✓ (verb + noun — kept)
+    eggplant peppers  ✗ (noun + noun — no verb anchor)
+    peppers squash    ✗ (noun + noun)
+    squash other      ✗ (noun + adj, no verb)
+  Without Layer 4, "eggplant peppers" and "ragweed goldenrod" (from weed lists)
+  appear in the top bigrams even though they describe crop/weed species lists,
+  not farm tasks.
+
+BIGRAM TYPES RETAINED (at least one word matches verb stem):
+  verb + noun      harvest ripe, spray fungicide, thin runners, discard culls
+  verb + adjective harvest green, pick mature, grade fresh
+  noun + verb      hand pick, hand harvest, machine harvest, field pack
+  verb + verb      harvest pack, plant cultivate, sort grade  (task sequences)
+  modifier + verb  carefully harvest, hand sort
+
+BIGRAM TYPES REJECTED (neither word is a verb stem):
+  noun + noun      eggplant peppers, ragweed goldenrod, sweet corn, drip tape
+  adj  + noun      ripe fruit, plastic flat, fresh produce, green leaves
+  adj  + adj       ripe green, fresh clean
+
+TRADEOFF
+  Some informative noun-noun bigrams are lost. "Drip tape" is a meaningful
+  technology term (drip irrigation tape), but it contains no verb. "Plastic
+  mulch" is similarly lost. These terms are better captured by the unigram
+  analysis (Layer 4 does not apply to unigrams) or by explicit keyword
+  searches outside the emerging-bigrams framework.
+
+  To recover technology/input terms, consider a separate noun-bigram analysis
+  restricted to a technology vocabulary (drip, mulch, substrate, tunnel, GPS,
+  sensor, monitor) — but keep it separate from the task-verb analysis.
+
+VERB STEM WHITELIST (matched as regex prefix with str_detect):
+  harvest, pick, plant, transplant, cultivat, till, bed, weed, hoe, thin,
+  prune, trim, train, trellis, tie, irrig, fertil, spray, apply, mulch,
+  mow, sow, seed, sort, grade, pack, box, load, unload, wash, cool, wrap,
+  weigh, label, stack, bin, inspect, operat, driv, attach, calibrat, adjust,
+  carry, cut, pull, dig, remov, stake, cover, clip, propagat, place, repair,
+  clean, discard, monitor, scout, sample, record, measur, count, flag,
+  sucker, debud, disbud, floor, set
+
+
+================================================================================
+WHAT THE ANALYSIS DOES AND DOES NOT CAPTURE
+================================================================================
+
+CAPTURES
+  - Changes in how employers describe physical strawberry production tasks
+  - Adoption of new production methods visible in language (e.g., appearance
+    of "substrate", "soilless", "tunnel" would signal protected cultivation)
+  - Shifts in crop handling descriptions (container types, harvest mechanics)
+  - Changes in task granularity (more vs less specific task enumeration)
+
+DOES NOT CAPTURE
+  - Tasks that were always done but never written down
+  - Tasks described in Addendum C that were not fully extracted
+  - Changes in task intensity (hours per task) — only presence/absence
+  - Employer-level heterogeneity within a period
+
+
+================================================================================
+END OF DOCUMENT
+================================================================================

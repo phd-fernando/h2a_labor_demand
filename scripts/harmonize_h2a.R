@@ -422,6 +422,7 @@ process_file <- function(filepath) {
 harmonize_h2a <- function(ddir) {
 
   files_to_load <- c(
+    paste0(ddir, "H-2A_Disclosure_Data_FY2025_Q4.xlsx"),
     paste0(ddir, "H-2A_Disclosure_Data_FY2024.xlsx"),
     paste0(ddir, "H-2A_Disclosure_Data_FY2023.xlsx"),
     paste0(ddir, "H-2A_Disclosure_Data_FY2022.xlsx"),
