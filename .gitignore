@@ -1,35 +1,68 @@
+# R
 .Rproj.user
 .Rhistory
 .RData
 .Ruserdata
 
-# Raw data — large files (PDFs, RDS, Excel, CSV, zip)
-raw/
+# Data files (large / raw)
+data/
+*.dta
+*.csv
+*.xlsx
+*.xls
+*.7z
+*.zip
 
-# Processed intermediate data (RDS files, batch outputs) — regenerable
-processed/text/
-processed/text/gap_batches/
-processed/text/gap_batches_full/
+# Large untracked top-level dirs
+_archive/
+output/
+papers/
 
-# Keep processed images (figures for dissertation)
-!processed/images/
+# Backups / artifacts
+.git_tinywrapper_bak/
+.gitignore_demand
 
-# Logs
-logs/
+# UDPipe model
+*.udpipe
 
-# Dashboard build artifacts
-dashboard/
+# Processed outputs (regenerable)
+*/processed/
+_archive/processed_text/
 
-# Misc
-Rplots.pdf
-*.pdf
+# Raw data dirs
+*/raw/
+**/webb_replication/data/
+
+# Large data formats
+*.rds
+*.parquet
+*.feather
+*.gz
+
+# Stata
+*.smcl
+*.log
+*.stswp
 
 # LaTeX build artifacts
 *.aux
 *.fdb_latexmk
 *.fls
+*.out
 *.synctex.gz
 *.toc
 *.blg
 *.bbl
 *.dvi
+
+# Python caches
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/
+.Renviron
