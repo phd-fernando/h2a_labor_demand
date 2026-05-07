@@ -15,17 +15,17 @@ dir.create(CACHE, recursive = TRUE, showWarnings = FALSE)
 
 PAT_CACHE <- file.path(CACHE, "patent_table.parquet")
 CPC_CACHE <- file.path(CACHE, "cpc_flags.parquet")
-PAT_ZIP   <- "data/g_patent.tsv.zip"
-CPC_ZIP   <- "data/g_cpc_current.tsv.zip"
+PAT_TSV   <- "data/g_patent.tsv"
+CPC_TSV   <- "data/g_cpc_current.tsv"
 ABS_TSV   <- "data/g_patent_abstract.tsv"
 OUT_PARQ  <- file.path(OUT, "patent_metadata.parquet")
 
-# ---- 0a. Build patent-year cache from g_patent.tsv.zip if missing ----
+# ---- 0a. Build patent-year cache from g_patent.tsv if missing --------
 # Keep all patents (1976 onwards in the PatentsView dump).
 if (!file.exists(PAT_CACHE)) {
-  cat("Building patent cache from", PAT_ZIP, "(slow first time)...\n")
+  cat("Building patent cache from", PAT_TSV, "(slow first time)...\n")
   t0 <- Sys.time()
-  raw <- fread(cmd = sprintf('unzip -p "%s"', PAT_ZIP),
+  raw <- fread(PAT_TSV,
                select = c("patent_id","patent_date","patent_title"),
                quote = '"')
   raw[, year := as.integer(substr(patent_date, 1, 4))]
@@ -41,9 +41,9 @@ if (!file.exists(PAT_CACHE)) {
 # Only A01* patents are kept.  The full CPC list per A01 patent is
 # recovered later in step 3.  No B25J/A61/B01 dead Webb-era flags.
 if (!file.exists(CPC_CACHE)) {
-  cat("Building CPC cache (A01 only) from", CPC_ZIP, "(slow first time)...\n")
+  cat("Building CPC cache (A01 only) from", CPC_TSV, "(slow first time)...\n")
   t0 <- Sys.time()
-  raw <- fread(cmd = sprintf('unzip -p "%s"', CPC_ZIP),
+  raw <- fread(CPC_TSV,
                select = c("patent_id","cpc_subclass"),
                quote = '"')
   a01_ids_dt <- raw[grepl("^A01", cpc_subclass), .(patent_id = unique(patent_id))]
@@ -83,10 +83,10 @@ pat <- merge(pat, abs, by = "patent_id", all.x = TRUE)
 pat[is.na(patent_abstract), patent_abstract := ""]
 cat("  patents missing abstract:", sum(pat$patent_abstract == ""), "\n")
 
-# ---- 3. ALL CPCs per patent (read from zip, filter to A01 patents) --
+# ---- 3. ALL CPCs per patent (read TSV, filter to A01 patents) -------
 cat("Pulling all CPCs for A01 patents...\n")
 t0 <- Sys.time()
-cpc_full <- fread(cmd = sprintf('unzip -p "%s"', CPC_ZIP),
+cpc_full <- fread(CPC_TSV,
                   select = c("patent_id","cpc_subclass"),
                   quote = '"')
 cpc_full[, patent_id := as.character(patent_id)]
