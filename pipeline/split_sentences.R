@@ -126,9 +126,11 @@ cat("After dropping boilerplate: ", nrow(sent), " (",
     n_distinct(sent$caseNumber), "\n", sep="")
 
 # ---- 5. Bigram count on the smaller set ----
-dict <- read.csv(file.path(DICT, "bigram_dictionary.csv"), stringsAsFactors = FALSE)
-tc   <- dict |> filter(label == 0) |> pull(bigram)
-farm <- dict |> filter(label == 1) |> pull(bigram)
+# Use the manual_v3 dictionary: labels are "tc" / "farm" / "other".
+dict <- read.delim(file.path(DICT, "bigram_dictionary_manual.tsv"),
+                   stringsAsFactors = FALSE)
+tc   <- dict |> filter(label == "tc")   |> pull(bigram)
+farm <- dict |> filter(label == "farm") |> pull(bigram)
 
 cat("Counting bigrams on post-boilerplate sentences...\n")
 t3 <- Sys.time()
@@ -141,9 +143,9 @@ sent <- sent |> left_join(counts, by = "sid") |>
   mutate(n_tc = coalesce(n_tc, 0L), n_farm = coalesce(n_farm, 0L))
 cat("  ", round(as.numeric(Sys.time()-t3, units="mins"),2), " min\n", sep="")
 
-# ---- 6. Drop n_tc>=4 & n_farm==0 ----
-sent <- sent |> filter(!(n_tc >= 4 & n_farm == 0))
-cat("After dropping n_tc>=4 & n_farm==0: ", nrow(sent), " | JOs: ",
+# ---- 6. Keep only n_tc == 0 & n_farm >= 1 ----
+sent <- sent |> filter(n_tc == 0 & n_farm >= 1)
+cat("After keep [n_tc==0 & n_farm>=1]: ", nrow(sent), " | JOs: ",
     n_distinct(sent$caseNumber), "\n", sep="")
 
 # ---- 7. (implicit) JOs with zero surviving sentences are absent already ----

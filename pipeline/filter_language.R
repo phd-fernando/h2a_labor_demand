@@ -20,6 +20,30 @@ jo <- arrow::read_parquet(file.path(CORE, "jo_full.parquet")) |>
          !is.na(duties_full), nchar(duties_full) > 50)
 cat("In-scope JOs:", nrow(jo), "\n")
 
+# ---- Drop top-100 FEIN by JO count + agAssoc JOs ----
+n_before <- nrow(jo)
+fein_count <- jo |>
+  filter(!is.na(empFein), empFein != "") |>
+  count(empFein, sort = TRUE)
+top100_fein <- head(fein_count$empFein, 100)
+excl_path <- file.path(DATA, "dictionaries", "excluded_fein.tsv")
+write.table(data.frame(empFein = top100_fein,
+                       n_jos   = head(fein_count$n, 100)),
+            excl_path, sep = "\t", row.names = FALSE, quote = FALSE)
+cat("Top-100 FEIN saved:", excl_path, "  (covers",
+    sum(head(fein_count$n, 100)), "of", n_before, "JOs)\n")
+
+agassoc_yes <- function(x) {
+  if (is.logical(x))   return(!is.na(x) & x)
+  if (is.character(x)) return(!is.na(x) & toupper(x) %in% c("YES","Y","TRUE","T","1"))
+  rep(FALSE, length(x))
+}
+
+jo <- jo |>
+  filter(!empFein %in% top100_fein, !agassoc_yes(agAssoc))
+cat("After top-100-FEIN + agAssoc drop: ", nrow(jo),
+    " (dropped ", n_before - nrow(jo), ")\n", sep="")
+
 # Spanish marker pattern: function words + morphology + content words.
 es_function <- c("los","las","del","una","uno","para","por","sin","con","hasta",
                  "desde","que","porque","cuando","donde","aunque","sus","ella",
@@ -28,7 +52,43 @@ es_function <- c("los","las","del","una","uno","para","por","sin","con","hasta",
 es_content  <- c("trabajadores","empleador","empleadores","vivienda","cosecha",
                  "siembra","salario","herramientas","operador","empleado",
                  "trabajador","ranchero","cuidador","tareas","pastoreo")
-es_words <- unique(c(es_function, es_content))
+# Survivors observed in manual_v3 bigram outputs — added 2026-05-07.
+es_h2a_extra <- c(
+  "animales","ovejas","cabras","caballo","caballos","ganado","perros","pastor",
+  "dias","horas","semana","tener","experiencia","contra","evitar",
+  "ilegales","armas","traer","drogas","ausencias","excesivas","residencia",
+  "deberes","debe","puede","pueden","alimentos","alimento",
+  "etiquetar","vacunar","marcar","castrar","sanitarias","comunes",
+  "aplicables","aplicable","prohibido","durante",
+  "trabajos","trabajo","individuales","asignaciones","equipos",
+  "realizar","mantenimiento","reparaciones","reparar","mantener",
+  "malezas","hierbas","nocivas","venenosas","latente","tabaco","maduro",
+  "repitiendo","despido","inmediato","inmediata",
+  "temperaturas","extremas","invernales","suplementarios","suficiente","forraje",
+  "positiva","prueba","posibles","problemas",
+  "todos","todas","todo","tienen","organizadas",
+  "cosechadas","cosechar","cosechados","cosechador","mecanico",
+  "vehculos","descargar","mencionados","necesarios","ayudar","cortar",
+  "sera","pagado","largos","perodos",
+  "agacharse","doblarse","alcanzar","doblar","poder","levantar",
+  "restringir","madres","terrenos","cuartas","cuartos","momento",
+  "dispuestas","examinar","instrucciones","estacionales","codigo","diversificados",
+  "melones","podadora","alrededor","controle","esten","congeladas","mueren",
+  "congelados","distribuya","diarias","bandadas",
+  "entre","otros","otra","otras","necesidades","nutricionales",
+  "mientras","monta","facilitan","ranchos","miembros","equivalente","extranjero",
+  "jornada","laboral","laborales","capacidad","incluyen","cticas",
+  "operar","trabajar","cercas","ofrecidas","bajo","supervisar",
+  "numero","necesitar","transportar","ratones","moscas","camas","bajan",
+  "entrenados","conducir","camiones","mover","suministros",
+  "aire","libre","prolongada","estar","cualquier","alimentar","gente",
+  "manera","segura","encebramiento",
+  "aplicar","cumplir","limpiar","limpieza","antes","despues","contrato",
+  "puedes","cabezas","cabeza","traila","hojas","piscar","reuniones",
+  "trabajadora","aproximadamente","listados","escogidas","empacadas",
+  "ofrecer","obstaculizar","comprometerse","propio","propia","propios","propias"
+)
+es_words <- unique(c(es_function, es_content, es_h2a_extra))
 # Pattern: word match (literal) OR -ción suffix OR -mente suffix OR contains ñ or accents
 pat <- paste0(
   "\\b(?:", paste(es_words, collapse="|"), ")\\b",
