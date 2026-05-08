@@ -8,6 +8,8 @@
 #                                          patent_pairs.parquet
 #   D  Master figure (default filter)      scatter_all_a01.png
 #   E  Top-pairs companion table           top_pairs_all_a01.tsv
+#   F  AI-domain scatter suite (18 PNGs)
+#   G  GWA + ability scoring (per sentence) sentences_with_onet_scores.parquet
 #
 # Force-rebuild a stage by passing its letter on the command line:
 #   Rscript h2a_labor_demand/scripts/run_all.R           # incremental
@@ -111,5 +113,28 @@ run_stage("E",
   args_extra = c("TRUE",
                  file.path(WEBB, "results", "top_pairs_all_a01.tsv"),
                  "5"))
+
+# ---- Stage F: AI-domain scatter suite (18 PNGs) ----------------------------
+run_stage("F",
+  output = file.path(WEBB, "results", "suite_baseline_fullfy.png"),
+  inputs = c(file.path(WEBB, "filtered", "patent_pairs.parquet"),
+             file.path(WEBB, "pairs", "task_pairs.parquet"),
+             "output/cache/ai_predictions_full.parquet",
+             "output/cache/fwd_cites_2yr.parquet",
+             file.path(PIPE, "scatter_suite.R"),
+             file.path(PIPE, "make_scatter.R")),
+  scripts = file.path(PIPE, "scatter_suite.R"))
+
+# ---- Stage G: O*NET GWA + ability scoring per farm sentence ----------------
+# Independent of B/C/D/E/F. Reads sentences.parquet, the published 41x52
+# GWA->Abilities matrix, and the SOC importance scrape; emits one row per
+# sentence with 41 GWA cosines + 52 graded ability scores (option-2 normalized).
+run_stage("G",
+  output = file.path(DATA, "core", "sentences_with_onet_scores.parquet"),
+  inputs = c(file.path(DATA, "core", "sentences.parquet"),
+             file.path(DATA, "dictionaries", "onet_gwa_x_abilities.tsv"),
+             "output/cache/onet_relevance.tsv",
+             file.path(PIPE, "score_sentences_to_abilities.R")),
+  scripts = file.path(PIPE, "score_sentences_to_abilities.R"))
 
 cat("\n=== CASCADE COMPLETE ===\n")

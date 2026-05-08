@@ -14,9 +14,10 @@ suppressPackageStartupMessages({
   library(dplyr); library(stringr); library(readr)
 })
 
-DATA <- "output/text"
-SRC  <- file.path(DATA, "disclosure_crops_activities.csv")
-OUT  <- file.path(DATA, "crops_activities_long.parquet")
+DATA  <- "output/text"
+INPUT <- file.path(DATA, "analysis")
+SRC   <- file.path(INPUT, "disclosure_crops_activities.csv")
+OUT   <- file.path(DATA, "core", "crops_activities_long.parquet")
 
 cat("Reading disclosure ...\n")
 disc <- read_csv(SRC, show_col_types = FALSE,
@@ -28,7 +29,7 @@ disc <- read_csv(SRC, show_col_types = FALSE,
 cat("Disclosure rows:", nrow(disc), " | unique cases:", n_distinct(disc$caseNumber), "\n")
 
 cat("Reading JSON cropsAndActivities ...\n")
-js <- read_csv(file.path(DATA, "json_crops_activities.csv"), show_col_types = FALSE,
+js <- read_csv(file.path(INPUT, "json_crops_activities.csv"), show_col_types = FALSE,
                col_types = cols(addmaWageOffer = col_double(),
                                 entry_idx = col_integer(),
                                 .default = "c")) |>
@@ -48,7 +49,7 @@ disc <- bind_rows(disc, js_only)
 cat("Combined sources rows:", nrow(disc), " | unique cases:", n_distinct(disc$caseNumber), "\n")
 
 # Fallback for JOs in jo_full but not in disclosure
-jo <- arrow::read_parquet(file.path(DATA, "jo_full.parquet"))
+jo <- arrow::read_parquet(file.path(DATA, "core", "jo_full.parquet"))
 cat("\njo_full.parquet rows:", nrow(jo), "\n")
 missing <- jo |>
   anti_join(disc |> distinct(caseNumber), by = "caseNumber") |>
